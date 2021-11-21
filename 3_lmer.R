@@ -35,8 +35,8 @@ make_df <- function(sex, cohort_y, last_year){
     mutate(birth = birth - (birth %% !!cohort_y),
            age_s = rescale(age)) %>%
     group_by(birth) %>%
-    filter(min(age) <= !!age_high - !!fup, 
-           max(age) >= !!age_low + !!fup) %>%
+    filter(min(age) <= !!age_high - !!fup + 1, 
+           max(age) >= !!age_low + !!fup - 1) %>%
     group_by(year) %>%
     mutate(wt_int = wt_int*n()/sum(wt_int)) %>%
     ungroup() # %>%
@@ -77,9 +77,10 @@ set.seed(1)
 tic()
 plan(multisession, workers = 4)
 res_lmer <- expand_grid(sex = names(sexes),
-                        cohort_y = 1:4,
+                        cohort_y = c(1, 5),
                         last_year = c(2014, 2019),
                         outcome = c("bmi", "obese")) %>%
+  filter(cohort_y == 1 | last_year == 2019) %>%
   sample_frac() %>%
   mutate(res = future_pmap(list(sex, cohort_y, 
                                 last_year, outcome), 
@@ -93,7 +94,7 @@ res_lmer <- expand_grid(sex = names(sexes),
          sex_clean = str_to_title(sex),
          outcome_clean = ifelse(outcome == "bmi", 
                                 "Predicted BMI",
-                                "Probability of Obesity"))
+                                "Probability of\nObesity"))
 future:::ClusterRegistry("stop")
 toc()
 
@@ -111,8 +112,8 @@ make_pred <- function(mod, df_age, df_birth, outcome){
   
   df_pred <- df_term %>%
     mutate(coef = fixef + ranef) %>%
-    uncount(64 - 20 + 1, .id = "age") %>%
-    mutate(age = age + 19,
+    uncount(!!age_high - !!age_low + 1, .id = "age") %>%
+    mutate(age = age + !!age_low + 1,
            birth = as.double(birth)) %>%
     left_join(df_age, by = c("term", "age")) %>%
     mutate(beta = coef*value) %>%
@@ -170,9 +171,11 @@ res_lmer2 <- res_lmer %>%
 save(res_lmer2, file = "Data/lmer_results.Rdata")
 
 # 4. Make Plots ----
+load("Data/lmer_results.Rdata")
+
 # Predictions
-plot_pred <- function(cohort_y = 1, last_year = 2019){
-  res_lmer %>%
+plot_pred <- function(cohort_y = 1, last_year = 2019, save_p = FALSE){
+  p <- res_lmer2 %>%
     filter(cohort_y == !!cohort_y, last_year == !!last_year) %>%
     select(sex_clean, outcome_clean, pred) %>%
     unnest(pred) %>%
@@ -192,13 +195,25 @@ plot_pred <- function(cohort_y = 1, last_year = 2019){
                                   title.hjust = .5,                                
                                   barwidth = unit(20, 'lines'), 
                                   barheight = unit(.5, 'lines'))) +
-    labs(x = "Centile", y = NULL, color = "Cohort")
+    labs(x = "Age", y = NULL, color = "Cohort")
+  
+  if (save_p == TRUE){
+    glue("Images/lmer_{cohort_y}_{last_year}.png") %>%
+      ggsave(plot = p, width = 29.7, height = 21, units = "cm")
+  }
+  
+  return(p)
 }
+
+res_lmer2 %>%
+  distinct(cohort_y, last_year) %$%
+  map2(cohort_y, last_year, plot_pred, TRUE)
 
 
 # Random Effects
-plot_re <- function(outcome, sexes = "all", cohort_y = 1, last_year = 2019){
-  res_lmer %>%
+plot_re <- function(outcome, sexes = "all", cohort_y = 1, 
+                    last_year = 2019, save_p = FALSE){
+  p <- res_lmer2 %>%
     filter(cohort_y == !!cohort_y, 
            last_year == !!last_year,
            sex %in% !!sexes, 
@@ -207,13 +222,31 @@ plot_re <- function(outcome, sexes = "all", cohort_y = 1, last_year = 2019){
     ggplot() +
     aes(x = birth, y = ranef, 
         ymin = lci, ymax = uci,
-        color = sex_clean) +
+        color = sex_clean, shape = sex_clean) +
     facet_wrap(~ term_clean, scales = "free", ncol = 1) +
     geom_hline(yintercept = 0, linetype = "dashed") +
-    geom_pointrange(position = position_dodge(0.5)) +
+    geom_pointrange(position = position_dodge(0.7), size = 0.3) +
     scale_color_brewer(palette = "Set1") +
+    scale_shape_manual(values = 16:15) +
     theme_bw() +
     theme(legend.position = "bottom") +
-    labs(x = "Cohort", y = NULL, color = NULL)
+    labs(x = "Cohort", y = NULL, color = NULL, shape = NULL)
+  
+  if (identical(sexes, "all")){
+    p <- p + theme(legend.position = "none")
+  }
+  
+  sexes_stub <- ifelse(identical(sexes, "all"), "all", "sex")
+  
+  if (save_p == TRUE){
+    glue("Images/re_{outcome}_{sexes_stub}_{cohort_y}_{last_year}.png") %>%
+      ggsave(plot = p, width = 21, height = 16, units = "cm")
+  }
+  
+  return(p)
 }
 
+res_lmer2 %>%
+  distinct(outcome, cohort_y, last_year) %>%
+  expand_grid(sexes = list("all", c("male", "female"))) %$%
+  pmap(list(outcome, sexes, cohort_y, last_year), plot_re, TRUE)

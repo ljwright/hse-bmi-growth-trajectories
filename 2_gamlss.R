@@ -30,27 +30,18 @@ df_cohort <- df_clean %>%
   mutate(cohort = birth - birth %% 10) %>%
   filter(age >= age_low, age <= age_high) %>%
   group_by(cohort) %>%
-  filter(max(age) >= age_low + !!fup, 
-         min(age) <= age_high + !!fup) %>%
+  filter(max(age) >= age_low + !!fup - 1, 
+         min(age) <= age_high + !!fup + 1) %>%
   ungroup() %>%
   filter(cohort > 1920)
-
-make_df <- function(cohort, sex){
-  df_cohort %>%
-    filter(cohort == !!cohort,
-           sex %in% sexes[[!!sex]]) %>%
-    group_by(year) %>%
-    mutate(wt_int = wt_int*n()/sum(wt_int)) %>%
-    ungroup()
-}
 
 # Sample Size
 df_count <- df_clean %>%
   arrange(birth) %>%
   filter(age >= age_low, age <= age_high) %>%
   group_by(birth) %>%
-  filter(max(age) >= age_low + !!fup, 
-         min(age) <= age_high + !!fup) %>%
+  filter(max(age) >= age_low + !!fup - 1, 
+         min(age) <= age_high + !!fup + 1) %>%
   ungroup() %>% 
   count(year, sort = TRUE)
 
@@ -124,6 +115,8 @@ save(res_gamlss, file = "Data/gamlss_results.Rdata")
 
 
 # 3. Predicted Values ----
+load("Data/gamlss_results.Rdata")
+
 get_ci <- function(x){
   quantile(x, probs = c(.5, .025, .975), 
            na.rm = TRUE) %>%
@@ -194,7 +187,11 @@ res_linpred %>%
   facet_grid(sex ~ cohort, switch = "y") +
   geom_line() +
   scale_color_viridis_c() +
-  scale_fill_viridis_c() +
+  scale_fill_viridis_c() +   
+  guides(color = guide_colorbar(title.position = 'top', 
+                                title.hjust = .5,                                
+                                barwidth = unit(20, 'lines'), 
+                                barheight = unit(.5, 'lines'))) +
   theme_bw() +
   theme(legend.position = "bottom",
         strip.placement = "outside",
