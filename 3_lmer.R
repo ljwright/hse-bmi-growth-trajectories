@@ -11,23 +11,27 @@ library(splines)
 library(quantreg)
 library(broom.mixed)
 library(magrittr)
+library(furrr)
+library(tictoc)
 
 rm(list = ls())
 
 # 1. Load Data ----
 load("Data/df_clean.Rdata")
+load("Data/model_parameters.Rdata")
 
 df_clean <- df_clean %>% 
-  mutate(obese = ifelse(bmi >= 30, 1, 0))
+  mutate(obese = ifelse(bmi >= 30, 1, 0)) %>%
+  filter(between(bmi, 13, 70),
+         age >= !!age_low, 
+         age <= !!age_high)
 
 
 # 2. Run lmer ----
-make_df <- function(age_low, age_high, fup, cohort_y, last_year){
+make_df <- function(sex, cohort_y, last_year){
   df_clean %>%
-    filter(between(bmi, 13, 70),
-           age >= !!age_low, 
-           age <= !!age_high,
-           year <= !!last_year) %>%
+    filter(year <= !!last_year,
+           sex %in% sexes[[!!sex]]) %>%
     mutate(birth = birth - (birth %% !!cohort_y),
            age_s = rescale(age)) %>%
     group_by(birth) %>%
@@ -35,16 +39,15 @@ make_df <- function(age_low, age_high, fup, cohort_y, last_year){
            max(age) >= !!age_low + !!fup) %>%
     group_by(year) %>%
     mutate(wt_int = wt_int*n()/sum(wt_int)) %>%
-    ungroup() %>%
-    group_by(birth) %>%
-    mutate(wt_int = wt_int*n()/sum(wt_int)) %>% # Carle (2009) Weighting Scaling
-    ungroup()
+    ungroup() # %>%
+  # group_by(birth) %>%
+  # mutate(wt_int = wt_int*n()/sum(wt_int)) %>% # Carle (2009) Weighting Scaling
+  # ungroup()
 }
 
-run_mod <- function(age_low, age_high, fup, cohort_y, last_year, outcome){
+run_mod <- function(sex, cohort_y, last_year, outcome){
   
-  df_mod <- make_df(age_low, age_high, fup,
-                    cohort_y, last_year)
+  df_mod <- make_df(sex, cohort_y, last_year)
   
   if (outcome == "bmi"){
     mod <- lmer(bmi ~ 1 + age_s + (1 + age_s | birth), 
@@ -70,24 +73,33 @@ run_mod <- function(age_low, age_high, fup, cohort_y, last_year, outcome){
   tibble(mod = list(mod), df_age = list(df_age), df_birth = list(df_birth))
 }
 
-res_lmer <- expand_grid(age_low = c(20, 44),
-                        age_high = c(44, 64),
-                        fup = 4,
+set.seed(1)
+tic()
+plan(multisession, workers = 4)
+res_lmer <- expand_grid(sex = names(sexes),
                         cohort_y = 1:4,
                         last_year = c(2014, 2019),
                         outcome = c("bmi", "obese")) %>%
-  filter(age_low < age_high, outcome == "bmi") %>%
-  rowwise() %>%
-  mutate(res = run_mod(age_low, age_high, fup, cohort_y, last_year, outcome)) %>%
-  ungroup() %>% 
-  tidyr::unpack(res) %>%
+  sample_frac() %>%
+  mutate(res = future_pmap(list(sex, cohort_y, 
+                                last_year, outcome), 
+                           run_mod, .progress = TRUE)) %>%
+  arrange(sex, cohort_y, last_year, outcome) %>%
+  unnest(res) %>%
   mutate(singular = map_lgl(mod, isSingular),
          cor = map_dbl(mod, ~ tidy(.x) %>%
                          filter(str_detect(term, "^cor")) %>%
-                         pull(4)))
+                         pull(4)),
+         sex_clean = str_to_title(sex),
+         outcome_clean = ifelse(outcome == "bmi", 
+                                "Predicted BMI",
+                                "Probability of Obesity"))
+future:::ClusterRegistry("stop")
+toc()
 
-# 4. Make Plots ----
-plot_pred <- function(mod, df_age, df_birth, outcome){
+
+# 3. Add Predicted Values ----
+make_pred <- function(mod, df_age, df_birth, outcome){
   df_term <- left_join(
     fixef(mod) %>%
       enframe(name = "term", value = "fixef"),
@@ -115,15 +127,15 @@ plot_pred <- function(mod, df_age, df_birth, outcome){
       mutate(estimate = exp(estimate)/(1+(exp(estimate))))
   }
   
-  ggplot(df_pred) +
-    aes(x = age, y = estimate, color = birth, group = birth) +
-    geom_line() +
-    theme_bw() +
-    scale_color_viridis_c() +
-    labs(x = "Age", y = "Predicted BMI", color = "Birth Year")
+  list(df_pred)
 }
 
-plot_re <- function(mod){
+res_lmer <- res_lmer %>%
+  rowwise() %>%
+  mutate(pred = make_pred(mod, df_age, df_birth, outcome)) %>%
+  ungroup()
+
+make_re <- function(mod){
   ran_effects <- ranef(mod)$birth %>%
     as_tibble(rownames = "birth")
   
@@ -146,17 +158,62 @@ plot_re <- function(mod){
            term_clean = ifelse(term == "(Intercept)", 
                                "Random Intercept", 
                                "Random Slope")) %>%
-    ggplot() +
-    aes(x = birth, y = ranef, ymin = lci, ymax = uci) +
-    facet_wrap(~ term_clean, scales = "free", ncol = 1) +
-    geom_hline(yintercept = 0, linetype = "dashed") +
-    geom_pointrange() +
-    theme_bw() +
-    labs(x = "Cohort", y = NULL)
+    select(birth, term_clean, ranef, lci, uci)
 }
 
-res_lmer %>%
-  slice(10) %$%
-  plot_pred(mod[[1]], df_age[[1]], df_birth[[1]], outcome)
+res_lmer <- res_lmer %>%
+  mutate(re = map(mod, make_re))
 
-plot_re(res_lmer$mod[[10]])
+
+res_lmer2 <- res_lmer %>%
+  select(-mod)
+save(res_lmer2, file = "Data/lmer_results.Rdata")
+
+# 4. Make Plots ----
+# Predictions
+plot_pred <- function(cohort_y = 1, last_year = 2019){
+  res_lmer %>%
+    filter(cohort_y == !!cohort_y, last_year == !!last_year) %>%
+    select(sex_clean, outcome_clean, pred) %>%
+    unnest(pred) %>%
+    ggplot() +
+    aes(x = age, y = estimate, color = birth, group = birth) +
+    facet_grid(outcome_clean ~ sex_clean, scales = "free_y", switch = "y") +
+    geom_line() +
+    theme_bw() +
+    scale_color_viridis_c() +
+    labs(x = "Age", y = "Predicted BMI", color = "Birth Year") +
+    theme_bw() +
+    theme(legend.position = "bottom",
+          strip.placement = "outside",
+          strip.text.y.left = element_text(angle = 0),
+          strip.background.y = element_blank()) +   
+    guides(color = guide_colorbar(title.position = 'top', 
+                                  title.hjust = .5,                                
+                                  barwidth = unit(20, 'lines'), 
+                                  barheight = unit(.5, 'lines'))) +
+    labs(x = "Centile", y = NULL, color = "Cohort")
+}
+
+
+# Random Effects
+plot_re <- function(outcome, sexes = "all", cohort_y = 1, last_year = 2019){
+  res_lmer %>%
+    filter(cohort_y == !!cohort_y, 
+           last_year == !!last_year,
+           sex %in% !!sexes, 
+           outcome == !!outcome) %>%
+    unnest(re) %>%
+    ggplot() +
+    aes(x = birth, y = ranef, 
+        ymin = lci, ymax = uci,
+        color = sex_clean) +
+    facet_wrap(~ term_clean, scales = "free", ncol = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_pointrange(position = position_dodge(0.5)) +
+    scale_color_brewer(palette = "Set1") +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    labs(x = "Cohort", y = NULL, color = NULL)
+}
+
