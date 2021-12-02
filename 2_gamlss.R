@@ -203,17 +203,24 @@ ggsave("Images/gamlss_1.png", width = 29.7, height = 21, units = "cm")
 
 
 # Plot 2
+obese_cat <- tribble(
+  ~centile, ~age, ~beta, ~label,
+  "10th", -Inf, 18.5, "Normal",
+  "10th", -Inf, 25, "Overweight",
+  "10th", -Inf, 30, "Obese")
+
 res_linpred %>%
   filter(centile %in% c(10, 25, 50, 75, 90)) %>%
   mutate(sex = str_to_title(sex),
          centile = glue("{centile}th")) %>%
   ggplot() +
-  aes(x = age, y = beta,
-      ymin = lci, ymax = uci,
-      color = cohort, fill = cohort) +
+  aes(x = age, y = beta) +
   facet_grid(sex ~ centile, switch = "y") +
-  geom_ribbon(color = NA, alpha = 0.2) +
-  geom_line() +
+  geom_hline(yintercept = c(18.5, 25, 30), linetype = "dashed", color = "grey60") + 
+  geom_ribbon(aes(ymin = lci, ymax = uci, fill = cohort), color = NA, alpha = 0.2) +
+  geom_line(aes(color = cohort)) + 
+  geom_text(data = obese_cat, aes(label = label),
+            vjust = -0.5, hjust = -0.1, color = "grey50") +
   theme_bw() +
   theme(legend.position = "bottom",
         strip.placement = "outside",
@@ -222,26 +229,57 @@ res_linpred %>%
   labs(x = "Age", y = NULL, color = "Cohort", fill = "Cohort")
 ggsave("Images/gamlss_2.png", width = 29.7, height = 21, units = "cm")
 
+# Plot 3a
+obese_cat <- tribble(
+  ~centile, ~ age_f, ~age, ~beta, ~label,
+  -Inf, "Age 25", -Inf, 18.5, "Normal",
+  -Inf, "Age 25", -Inf, 25, "Overweight",
+  -Inf, "Age 25", -Inf, 30, "Obese")
 
-# Plot 3
 res_linpred %>%
-  filter(age %in% c(25, 35, 45, 55)) %>%
-  mutate(age_f = glue("Age {age}"),
-         sex = str_to_title(sex)) %>%
+  filter(age %in% c(25, 35, 45, 55),
+         sex == "all") %>%
+  mutate(age_f = glue("Age {age}")) %>%
   ggplot() +
-  aes(x = centile, y = beta,
-      ymin = lci, ymax = uci, 
-      color = cohort, fill = cohort) +
-  facet_grid(sex ~ age_f, switch = "y") +
-  geom_ribbon(color = NA, alpha = 0.2) +
-  geom_line() +
+  aes(x = centile, y = beta) +
+  facet_grid( ~ age_f, switch = "y") +
+  geom_hline(yintercept = c(18.5, 25, 30), linetype = "dashed", color = "grey60") + 
+  geom_ribbon(aes(ymin = lci, ymax = uci, fill = cohort), color = NA, alpha = 0.2) +
+  geom_line(aes(color = cohort)) +
+  geom_text(data = obese_cat, aes(label = label),
+            vjust = -0.5, hjust = -0.1, color = "grey50") +
+  coord_cartesian(ylim = c(NA, 45)) +
   theme_bw() +
   theme(legend.position = "bottom",
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
   labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort")
-ggsave("Images/gamlss_3.png", width = 29.7, height = 21, units = "cm")
+ggsave("Images/gamlss_3a.png", width = 29.7, height = 21, units = "cm")
+
+
+# Plot 3
+res_linpred %>%
+  filter(age %in% c(25, 35, 45, 55),
+         sex != "all") %>%
+  mutate(age_f = glue("Age {age}"),
+         sex = str_to_title(sex)) %>%
+  ggplot() +
+  aes(x = centile, y = beta) +
+  facet_grid(sex ~ age_f, switch = "y") +
+  geom_hline(yintercept = c(18.5, 25, 30), linetype = "dashed", color = "grey60") + 
+  geom_ribbon(aes(ymin = lci, ymax = uci, fill = cohort), color = NA, alpha = 0.2) +
+  geom_line(aes(color = cohort)) +
+  geom_text(data = obese_cat, aes(label = label),
+            vjust = -0.5, hjust = -0.1, color = "grey50") +
+  coord_cartesian(ylim = c(NA, 50)) +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.placement = "outside",
+        strip.text.y.left = element_text(angle = 0),
+        strip.background.y = element_blank()) +
+  labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort")
+ggsave("Images/gamlss_3b.png", width = 29.7, height = 21, units = "cm")
 
 # Plot 4
 param_dict <- c(mu = "Median", sigma = "CoV", nu = "Skewness")
