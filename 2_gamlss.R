@@ -10,11 +10,12 @@ library(magrittr)
 library(gamlss)
 library(furrr)
 library(tictoc)
+library(summarytools)
 
 rm(list = ls())
 
 # 1. Load Data ----
-load("Data/df_clean.Rdata")
+load("Data/hse_clean.Rdata")
 
 age_low <- 20
 age_high <- 64
@@ -25,7 +26,9 @@ sexes <- list(male = "Male", female = "Female",
 save(age_low, age_high, fup, sexes,
      file = "Data/model_parameters.Rdata")
 
+# 2. Make Dataset ----
 df_cohort <- df_clean %>%
+  dplyr::select(-edu) %>%
   arrange(birth) %>%
   mutate(cohort = birth - birth %% 10) %>%
   filter(age >= age_low, age <= age_high) %>%
@@ -33,7 +36,8 @@ df_cohort <- df_clean %>%
   filter(max(age) >= age_low + !!fup - 1, 
          min(age) <= age_high + !!fup + 1) %>%
   ungroup() %>%
-  filter(cohort > 1920)
+  filter(cohort > 1920) %>%
+  drop_na()
 
 # Sample Size
 df_count <- df_clean %>%
@@ -49,7 +53,7 @@ summary(df_count$n)
 df_count %>% slice(c(1, n()))
 
 
-# 2. Run Models ----
+# 3. Run Models ----
 get_linpred <- function(cohort, sex){
   data <- df_cohort %>%
     filter(cohort == !!cohort,
@@ -90,6 +94,7 @@ get_linpred <- function(cohort, sex){
       pivot_wider(names_from = param, values_from = estimate)
   }
   
+  set.seed(1)
   map_dfr(1:200, ~ sample_frac(df_mod, replace = TRUE) %>%
             run_mod(),
           .id = "boot") %>%
@@ -114,7 +119,7 @@ toc()
 save(res_gamlss, file = "Data/gamlss_results.Rdata")
 
 
-# 3. Predicted Values ----
+# 4. Predicted Values ----
 load("Data/gamlss_results.Rdata")
 
 get_ci <- function(x){
@@ -174,7 +179,7 @@ save(res_param, res_linpred, res_diff,
      file = "Data/gamlss_predictions.Rdata")
 
 
-# 3. Plots ----
+# 5. Plots ----
 load("Data/gamlss_predictions.Rdata")
 
 # Plot 1
@@ -202,7 +207,7 @@ res_linpred %>%
 ggsave("Images/gamlss_1.png", width = 29.7, height = 21, units = "cm")
 
 
-# Plot 2
+# Plot 2a
 obese_cat <- tribble(
   ~centile, ~age, ~beta, ~label,
   "10th", -Inf, 18.5, "Normal",
@@ -210,7 +215,30 @@ obese_cat <- tribble(
   "10th", -Inf, 30, "Obese")
 
 res_linpred %>%
-  filter(centile %in% c(10, 25, 50, 75, 90)) %>%
+  filter(centile %in% c(10, 25, 50, 75, 90),
+         sex == "all") %>%
+  mutate(centile = glue("{centile}th")) %>%
+  ggplot() +
+  aes(x = age, y = beta) +
+  facet_grid(~ centile, switch = "y") +
+  geom_hline(yintercept = c(18.5, 25, 30), linetype = "dashed", color = "grey60") + 
+  geom_ribbon(aes(ymin = lci, ymax = uci, fill = cohort), color = NA, alpha = 0.2) +
+  geom_line(aes(color = cohort)) + 
+  geom_text(data = obese_cat, aes(label = label),
+            vjust = -0.5, hjust = -0.1, color = "grey50") +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.placement = "outside",
+        strip.text.y.left = element_text(angle = 0),
+        strip.background.y = element_blank()) +
+  labs(x = "Age", y = NULL, color = "Cohort", fill = "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
+ggsave("Images/gamlss_2a.png", width = 29.7, height = 21, units = "cm")
+
+# Plot 2b
+res_linpred %>%
+  filter(centile %in% c(10, 25, 50, 75, 90),
+         sex != "all") %>%
   mutate(sex = str_to_title(sex),
          centile = glue("{centile}th")) %>%
   ggplot() +
@@ -226,16 +254,18 @@ res_linpred %>%
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
-  labs(x = "Age", y = NULL, color = "Cohort", fill = "Cohort")
-ggsave("Images/gamlss_2.png", width = 29.7, height = 21, units = "cm")
+  labs(x = "Age", y = NULL, color = "Cohort", fill = "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
+ggsave("Images/gamlss_2b.png", width = 29.7, height = 21, units = "cm")
 
-# Plot 3a
+# Plot 3
 obese_cat <- tribble(
   ~centile, ~ age_f, ~age, ~beta, ~label,
   -Inf, "Age 25", -Inf, 18.5, "Normal",
   -Inf, "Age 25", -Inf, 25, "Overweight",
   -Inf, "Age 25", -Inf, 30, "Obese")
 
+# Plot 3a
 res_linpred %>%
   filter(age %in% c(25, 35, 45, 55),
          sex == "all") %>%
@@ -254,11 +284,12 @@ res_linpred %>%
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
-  labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort")
+  labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
 ggsave("Images/gamlss_3a.png", width = 29.7, height = 21, units = "cm")
 
 
-# Plot 3
+# Plot 3b
 res_linpred %>%
   filter(age %in% c(25, 35, 45, 55),
          sex != "all") %>%
@@ -278,13 +309,34 @@ res_linpred %>%
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
-  labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort")
+  labs(x = "Centile", y = NULL, color = "Cohort", fill=  "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
 ggsave("Images/gamlss_3b.png", width = 29.7, height = 21, units = "cm")
 
 # Plot 4
 param_dict <- c(mu = "Median", sigma = "CoV", nu = "Skewness")
 
+# Plot 4a
 res_param %>%
+  filter(sex == "all") %>%
+  mutate(param_clean = factor(param_dict[parameter], param_dict)) %>%
+  ggplot() +
+  aes(x = age, y = beta, ymin = lci, ymax = uci,
+      color = cohort, fill = cohort) +
+  facet_grid(param_clean ~ ., scales = "free_y", switch = "y") +
+  geom_ribbon(color = NA, alpha = 0.2) +
+  geom_line() +
+  theme_bw() +
+  theme(legend.position = "bottom",
+        strip.placement = "outside",
+        strip.text.y.left = element_text(angle = 0),
+        strip.background.y = element_blank()) +
+  labs(x = "Age", y = NULL, color = "Cohort", fill=  "Cohort")
+ggsave("Images/gamlss_4a.png", width = 21, height = 29.7, units = "cm")
+
+# Plot 4b
+res_param %>%
+  filter(sex != "all") %>%
   mutate(sex = str_to_title(sex),
          param_clean = factor(param_dict[parameter], param_dict)) %>%
   ggplot() +
@@ -298,8 +350,9 @@ res_param %>%
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
-  labs(x = "Age", y = NULL, color = "Cohort", fill=  "Cohort")
-ggsave("Images/gamlss_4.png", width = 29.7, height = 21, units = "cm")
+  labs(x = "Age", y = NULL, color = "Cohort", fill=  "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
+ggsave("Images/gamlss_4b.png", width = 29.7, height = 21, units = "cm")
 
 
 # Plot 5
@@ -316,5 +369,6 @@ res_diff %>%
         strip.placement = "outside",
         strip.text.y.left = element_text(angle = 0),
         strip.background.y = element_blank()) +
-  labs(x = "Age", y = NULL, color = "Cohort", fill=  "Cohort")
+  labs(x = "Age", y = NULL, color = "Cohort", fill=  "Cohort") +
+  guides(color = guide_legend(nrow = 1), fill = guide_legend(nrow = 1))
 ggsave("Images/gamlss_5.png", width = 21, height = 16, units = "cm")

@@ -7,7 +7,7 @@ rm(list = ls())
 
 # 1. Create Lookup
 hse_fld <- "D:/HSE"
-hse_fld <- "/Volumes/CLS DATA/HSE"
+# hse_fld <- "/Volumes/CLS DATA/HSE"
 
 get_label <- function(var){
   lbl <- attr(var, "label", exact = TRUE)
@@ -62,6 +62,11 @@ df <- df_files %>%
                                                  matches(grep_list))) %>%
                      rename_all(str_to_lower)))
 
+save(df, file = "Data/df_raw.Rdata")
+
+# 3. Clean Files ----
+load("Data/df_raw.Rdata")
+
 set.seed(1)
 clean_df <- function(fld, dta){
   fld_year <- str_sub(fld, 1, 4) %>% as.numeric()
@@ -75,7 +80,7 @@ clean_df <- function(fld, dta){
   }
   
   dta <- dta %>%
-    filter(bmiok == 1)
+    mutate(bmi = ifelse(bmiok == 1, bmi, NA))
   
   if (fld_year <= 1997){ # ETHNICITY
     dta <- dta %>%
@@ -155,52 +160,23 @@ clean_df <- function(fld, dta){
   dta <- dta %>%
     mutate(sex = ifelse(sex == 1, "Male", "Female") %>%
              factor()) %>%
-    dplyr::select(year, sex, age, bmi, edu, wt_int)
+    select(year, sex, age, bmi, edu, wt_int)
   
   return(dta)
 }
 
 df_clean <- df %>%
   mutate(clean = map2(fld, dta, clean_df)) %>%
-  dplyr::select(clean) %>%
+  select(clean) %>%
   unnest(clean) %>%
   zap_labels() %>%
   zap_label() %>%
   zap_formats() %>%
   mutate(age = ifelse(age <= 0, NA, age),
-         birth = year - age) %>%
-  drop_na()
+         birth = year - age,
+         bmi = ifelse(between(bmi, 13, 70), bmi, NA))
 
 save(df_clean, file = "Data/hse_clean.Rdata")
 write_dta(df_clean, "Data/hse_clean.dta")
-
-
-# Education Labels ----
-get_lbls <- function(dta){
-  dta %>%
-    select(matches("^topqual2")) %>%
-    map_dfr( ~ attr(.x, "labels") %>%
-               enframe(name = "label", value = "level"),
-             .id = "var")
-}
-
-edu_lbl <- df %>%
-  mutate(lbls = map(dta, get_lbls)) %>%
-  select(fld, lbls) %>%
-  unnest(lbls) %>%
-  filter(level >= 0,
-         str_detect(var, "^topqual")) %>%
-  arrange(var, level, fld)
-
-write_csv(edu_lbl, "Data/edu_lookup.csv")
-
-df %>%
-  filter(fld == "2019") %>%
-  unnest(dta) %>%
-  pull(topqual2) %>%
-  attr("labels")
-
-
-
 
 
